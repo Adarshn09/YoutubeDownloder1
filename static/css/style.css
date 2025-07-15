@@ -1,0 +1,186 @@
+/* Custom styles for YouTube Downloader */
+
+body {
+    background-color: var(--bs-body-bg);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.navbar-brand {
+    font-weight: bold;
+    font-size: 1.5rem;
+}
+
+.container {
+    flex: 1;
+}
+
+.card {
+    border: none;
+    border-radius: 12px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.format-option {
+    cursor: pointer;
+    transition: all 0.2s ease;
+    border: 2px solid transparent;
+}
+
+.format-option:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+}
+
+.format-option.selected {
+    border-color: var(--bs-success);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+}
+
+.format-option .card-body {
+    padding: 1rem;
+}
+
+.format-badge {
+    font-weight: bold;
+    padding: 0.25rem 0.5rem;
+    border-radius: 6px;
+}
+
+.input-group-lg .form-control {
+    font-size: 1.1rem;
+}
+
+.btn-lg {
+    font-size: 1.1rem;
+    padding: 0.75rem 2rem;
+    border-radius: 8px;
+}
+
+.feature-icon {
+    color: var(--bs-primary);
+}
+
+#videoThumbnail {
+    max-height: 200px;
+    object-fit: cover;
+}
+
+.spinner-border-sm {
+    width: 1rem;
+    height: 1rem;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .container {
+        padding: 0 15px;
+    }
+    
+    .card-body {
+        padding: 1.5rem;
+    }
+    
+    .input-group-lg .btn {
+        font-size: 0.9rem;
+    }
+    
+    .format-option {
+        margin-bottom: 0.5rem;
+    }
+    
+    #videoThumbnail {
+        margin-bottom: 1rem;
+    }
+}
+
+/* Loading animation */
+.loading {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+/* Success states */
+.btn-success:focus {
+    box-shadow: 0 0 0 0.2rem rgba(25, 135, 84, 0.25);
+}
+
+/* Custom alert styling */
+.alert {
+    border-radius: 8px;
+    border: none;
+}
+
+/* Format option icons */
+.format-icon-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 60px;
+}
+
+.format-icon {
+    font-size: 2.5rem !important;
+    line-height: 1;
+    display: inline-block !important;
+    transition: transform 0.2s ease;
+    font-family: "Font Awesome 6 Free", "Font Awesome 5 Free", sans-serif;
+    font-weight: 900;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+/* Fallback for when Font Awesome doesn't load */
+.format-icon:empty::before {
+    content: '▶';
+    font-family: sans-serif;
+    font-size: 2.5rem;
+    display: inline-block;
+}
+
+.format-quality {
+    font-size: 1.1rem;
+    font-weight: bold;
+    margin-bottom: 0.5rem;
+}
+
+.format-details {
+    font-size: 0.85rem;
+    opacity: 0.8;
+}
+
+.format-details .badge {
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.format-option:hover .format-icon {
+    transform: scale(1.1);
+}
+
+.format-option.selected .format-icon {
+    transform: scale(1.1);
+}
+
+.format-option .card-body {
+    padding: 1rem;
+    min-height: 160px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+}
+
+/* Feature icons */
+.feature-icon {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 80px;
+}
+
+.feature-icon i {
+    font-size: 3rem !important;
+    line-height: 1;
+}
