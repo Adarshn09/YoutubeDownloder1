@@ -2,6 +2,7 @@ import os
 import logging
 import json
 import tempfile
+import time
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify, send_file, flash, redirect, url_for
 from flask_sqlalchemy import SQLAlchemy
@@ -10,6 +11,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 import yt_dlp
 from urllib.parse import urlparse, parse_qs
 import re
+from functools import wraps
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -52,31 +54,99 @@ def extract_video_id(url):
         return match.group(6)
     return None
 
+def retry_with_backoff(max_retries=3, base_delay=1, backoff_factor=2):
+    """Decorator to retry function with exponential backoff"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    last_exception = e
+                    if attempt < max_retries - 1:
+                        delay = base_delay * (backoff_factor ** attempt)
+                        app.logger.warning(f"Attempt {attempt + 1} failed: {str(e)}. Retrying in {delay} seconds...")
+                        time.sleep(delay)
+                    else:
+                        app.logger.error(f"All {max_retries} attempts failed. Last error: {str(e)}")
+            raise last_exception
+        return wrapper
+    return decorator
+
+@retry_with_backoff(max_retries=3, base_delay=2, backoff_factor=2)
+def extract_video_info_with_retry(url):
+    """Extract video information with retry logic"""
+    ydl_opts = get_yt_dlp_config(for_download=False)
+    
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        return ydl.extract_info(url, download=False)
+
 def get_yt_dlp_config(for_download=False):
     """Get optimized yt-dlp configuration to avoid bot detection"""
+    import random
+    
+    # Rotate user agents to avoid detection
+    user_agents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/121.0'
+    ]
+    
+    selected_ua = random.choice(user_agents)
+    
     config = {
         'quiet': True,
         'no_warnings': True,
         'ignoreerrors': False,
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'user_agent': selected_ua,
         'extractor_args': {
             'youtube': {
-                'skip': ['dash'],
+                'skip': ['dash', 'hls'],
                 'player_skip': ['js'],
-                'innertube_host': ['www.youtube.com', 'youtubei.googleapis.com']
+                'innertube_host': ['www.youtube.com', 'youtubei.googleapis.com'],
+                'innertube_key': None,
+                'player_client': ['android', 'web']
             }
         },
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate',
+            'User-Agent': selected_ua,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
             'Connection': 'keep-alive',
             'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0'
         },
-        'sleep_interval': 1,
-        'max_sleep_interval': 5,
+        'sleep_interval': random.uniform(1, 3),
+        'max_sleep_interval': random.uniform(5, 10),
+        'socket_timeout': 60,
+        'retries': 3,
+        'fragment_retries': 3,
+        'skip_unavailable_fragments': True,
+        'abort_on_unavailable_fragment': False,
+        'keepvideo': False,
+        'no_check_certificate': True,
+        'prefer_insecure': False,
+        'geo_bypass': True,
+        'geo_bypass_country': 'US',
+        'age_limit': None,
+        'cookiesfrombrowser': None,
+        'youtube_include_dash_manifest': False,
+        'youtube_include_hls_manifest': False
     }
+    
+    # Add proxy support if available
+    proxy = os.environ.get('HTTP_PROXY') or os.environ.get('HTTPS_PROXY')
+    if proxy:
+        config['proxy'] = proxy
     
     if not for_download:
         config['extract_flat'] = False
@@ -108,21 +178,12 @@ def get_video_info():
         if not is_valid_youtube_url(url):
             return jsonify({'error': 'Please enter a valid YouTube URL'}), 400
         
-        # Use simple, reliable yt-dlp configuration
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': False,
-            'format': 'best',
-        }
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Extract video information
-            try:
-                info = ydl.extract_info(url, download=False)
-            except Exception as extract_error:
-                app.logger.error(f"Info extraction failed: {str(extract_error)}")
-                return jsonify({'error': 'Could not extract video information. The video may be private, unavailable, or restricted.'}), 400
+        # Use enhanced configuration with retry mechanism
+        try:
+            info = extract_video_info_with_retry(url)
+        except Exception as extract_error:
+            app.logger.error(f"Info extraction failed after retries: {str(extract_error)}")
+            return jsonify({'error': 'Could not extract video information. The video may be private, unavailable, or restricted.'}), 400
             
             # Check if we got valid info
             if not info or not isinstance(info, dict):
@@ -245,25 +306,20 @@ def download_video():
         # Create temporary directory for download
         temp_dir = tempfile.mkdtemp()
         
-        # Use simple, reliable yt-dlp configuration for download
+        # Use enhanced configuration for download
+        ydl_opts = get_yt_dlp_config(for_download=True)
+        ydl_opts['outtmpl'] = os.path.join(temp_dir, '%(title)s.%(ext)s')
+        
         if format_id == 'bestaudio':
-            ydl_opts = {
-                'quiet': True,
-                'format': 'bestaudio/best',
-                'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }],
-            }
+            ydl_opts['format'] = 'bestaudio/best'
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }]
         else:
-            # Simplified format selection - just use best available
-            ydl_opts = {
-                'quiet': True,
-                'format': 'best',
-                'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
-            }
+            # Use best available format
+            ydl_opts['format'] = 'best'
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             # Get video info first
