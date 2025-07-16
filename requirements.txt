@@ -1,6 +1,6 @@
 Flask==2.3.3
 Flask-SQLAlchemy==3.0.5
-yt-dlp==2023.12.30
+yt-dlp==2025.6.30
 Werkzeug==2.3.7
 SQLAlchemy==2.0.23
 requests==2.31.0
