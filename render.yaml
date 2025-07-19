@@ -2,8 +2,11 @@ services:
   - type: web
     name: youtube-downloader
     env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: python app.py
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+      pip install --upgrade yt-dlp
+    startCommand: python deploy.py
     plan: free
     autoDeploy: false
     envVars:
@@ -15,6 +18,10 @@ services:
         fromDatabase:
           name: youtube-downloader-db
           property: connectionString
+      - key: FLASK_ENV
+        value: production
+      - key: PYTHONUNBUFFERED
+        value: "1"
 
 databases:
   - name: youtube-downloader-db

@@ -1,4 +1,5 @@
 import os
+import sys
 import logging
 import json
 import tempfile
@@ -75,25 +76,58 @@ def retry_with_backoff(max_retries=3, base_delay=1, backoff_factor=2):
         return wrapper
     return decorator
 
-@retry_with_backoff(max_retries=3, base_delay=2, backoff_factor=2)
+@retry_with_backoff(max_retries=5, base_delay=3, backoff_factor=2)
 def extract_video_info_with_retry(url):
-    """Extract video information with retry logic"""
-    ydl_opts = get_yt_dlp_config(for_download=False)
+    """Extract video information with multiple fallback strategies"""
+    strategies = [
+        # Strategy 1: Android client (most reliable)
+        {'player_client': ['android'], 'innertube_host': ['youtubei.googleapis.com']},
+        # Strategy 2: iOS client
+        {'player_client': ['ios'], 'innertube_host': ['youtubei.googleapis.com']},
+        # Strategy 3: Web client with different host
+        {'player_client': ['web'], 'innertube_host': ['www.youtube.com']},
+        # Strategy 4: Mobile web
+        {'player_client': ['mweb'], 'innertube_host': ['m.youtube.com']},
+        # Strategy 5: TV client
+        {'player_client': ['tv'], 'innertube_host': ['youtubei.googleapis.com']}
+    ]
     
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        return ydl.extract_info(url, download=False)
+    last_error = None
+    
+    for i, strategy in enumerate(strategies):
+        try:
+            app.logger.info(f"Trying extraction strategy {i+1}/5: {strategy['player_client'][0]}")
+            ydl_opts = get_yt_dlp_config(for_download=False)
+            ydl_opts['extractor_args']['youtube'].update(strategy)
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                return ydl.extract_info(url, download=False)
+                
+        except Exception as e:
+            last_error = e
+            app.logger.warning(f"Strategy {i+1} failed: {str(e)}")
+            # Add delay between strategies
+            if i < len(strategies) - 1:
+                time.sleep(2)
+            continue
+    
+    # If all strategies failed, raise the last error
+    raise last_error
 
 def get_yt_dlp_config(for_download=False):
     """Get optimized yt-dlp configuration to avoid bot detection"""
     import random
     
-    # Rotate user agents to avoid detection
+    # More diverse and recent user agents
     user_agents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/121.0'
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:133.0) Gecko/20100101 Firefox/133.0',
+        'Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15'
     ]
     
     selected_ua = random.choice(user_agents)
@@ -105,42 +139,46 @@ def get_yt_dlp_config(for_download=False):
         'user_agent': selected_ua,
         'extractor_args': {
             'youtube': {
+                'player_client': ['android', 'web', 'ios', 'mweb'],
+                'player_skip': ['configs'],
                 'skip': ['dash', 'hls'],
-                'player_skip': ['js'],
                 'innertube_host': ['www.youtube.com', 'youtubei.googleapis.com'],
                 'innertube_key': None,
-                'player_client': ['android', 'web']
+                'check_formats': None
             }
         },
         'http_headers': {
             'User-Agent': selected_ua,
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/png,image/svg+xml,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
+            'Accept-Encoding': 'gzip, deflate, br, zstd',
             'Connection': 'keep-alive',
             'Upgrade-Insecure-Requests': '1',
             'Sec-Fetch-Dest': 'document',
             'Sec-Fetch-Mode': 'navigate',
             'Sec-Fetch-Site': 'none',
             'Sec-Fetch-User': '?1',
-            'Cache-Control': 'max-age=0'
+            'Cache-Control': 'max-age=0',
+            'DNT': '1'
         },
-        'sleep_interval': random.uniform(1, 3),
-        'max_sleep_interval': random.uniform(5, 10),
-        'socket_timeout': 60,
-        'retries': 3,
-        'fragment_retries': 3,
+        'sleep_interval': random.uniform(2, 5),
+        'max_sleep_interval': random.uniform(8, 15),
+        'socket_timeout': 120,
+        'retries': 5,
+        'fragment_retries': 5,
         'skip_unavailable_fragments': True,
         'abort_on_unavailable_fragment': False,
         'keepvideo': False,
         'no_check_certificate': True,
         'prefer_insecure': False,
         'geo_bypass': True,
-        'geo_bypass_country': 'US',
+        'geo_bypass_country': random.choice(['US', 'CA', 'GB', 'AU']),
         'age_limit': None,
         'cookiesfrombrowser': None,
         'youtube_include_dash_manifest': False,
-        'youtube_include_hls_manifest': False
+        'youtube_include_hls_manifest': False,
+        'concurrent_fragment_downloads': 1,
+        'hls_prefer_native': True
     }
     
     # Add proxy support if available
@@ -452,6 +490,41 @@ def test_video():
     """Test endpoint with a working video URL"""
     test_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"  # Rick Roll - usually works
     return render_template('test.html', test_url=test_url)
+
+@app.route('/health')
+def health_check():
+    """Health check endpoint for monitoring"""
+    try:
+        # Check database connection
+        db.session.execute('SELECT 1')
+        
+        # Check yt-dlp version
+        import yt_dlp
+        ytdlp_version = yt_dlp.version.__version__
+        
+        return jsonify({
+            'status': 'healthy',
+            'yt_dlp_version': ytdlp_version,
+            'database': 'connected'
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'status': 'unhealthy',
+            'error': str(e)
+        }), 500
+
+@app.route('/api/version')
+def api_version():
+    """Get application and yt-dlp version information"""
+    try:
+        import yt_dlp
+        return jsonify({
+            'app_version': '1.0.0',
+            'yt_dlp_version': yt_dlp.version.__version__,
+            'python_version': f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
