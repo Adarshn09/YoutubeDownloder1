@@ -13,9 +13,10 @@ import yt_dlp
 from urllib.parse import urlparse, parse_qs
 import re
 from functools import wraps
+import shutil
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO if os.environ.get('FLASK_ENV') == 'production' else logging.DEBUG)
 
 # Database setup
 class Base(DeclarativeBase):
@@ -35,6 +36,42 @@ app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
     "pool_pre_ping": True,
 }
 db.init_app(app)
+
+# Ensure yt-dlp cache directory exists
+os.environ.setdefault('YTDL_CACHE_DIR', '/tmp/ytdl-cache')
+try:
+    os.makedirs(os.environ['YTDL_CACHE_DIR'], exist_ok=True)
+except Exception as _e:
+    app.logger.warning(f"Could not create YTDL_CACHE_DIR: {str(_e)}")
+
+# Optionally load cookies from environment for yt-dlp
+
+def _setup_cookies_from_env():
+    b64 = os.environ.get('YTDLP_COOKIES_B64')
+    raw = os.environ.get('YTDLP_COOKIES')
+    path = os.environ.get('YTDLP_COOKIES_PATH')
+    if b64:
+        try:
+            import base64
+            decoded = base64.b64decode(b64)
+            path = '/tmp/yt-cookies.txt'
+            with open(path, 'wb') as f:
+                f.write(decoded)
+            os.environ['YTDLP_COOKIES_PATH'] = path
+            app.logger.info('Loaded cookies from YTDLP_COOKIES_B64')
+        except Exception as e:
+            app.logger.warning(f'Failed to load cookies from YTDLP_COOKIES_B64: {e}')
+    elif raw and not path:
+        try:
+            path = '/tmp/yt-cookies.txt'
+            with open(path, 'w') as f:
+                f.write(raw)
+            os.environ['YTDLP_COOKIES_PATH'] = path
+            app.logger.info('Loaded cookies from YTDLP_COOKIES')
+        except Exception as e:
+            app.logger.warning(f'Failed to write cookies from YTDLP_COOKIES: {e}')
+
+_setup_cookies_from_env()
 
 def is_valid_youtube_url(url):
     """Validate if the URL is a valid YouTube URL"""
@@ -144,7 +181,9 @@ def get_yt_dlp_config(for_download=False):
                 'skip': ['dash', 'hls'],
                 'innertube_host': ['www.youtube.com', 'youtubei.googleapis.com'],
                 'innertube_key': None,
-                'check_formats': None
+                'check_formats': None,
+                'po_token': [''],
+                'po_token_ephemeral': ['true']
             }
         },
         'http_headers': {
@@ -178,19 +217,26 @@ def get_yt_dlp_config(for_download=False):
         'youtube_include_dash_manifest': False,
         'youtube_include_hls_manifest': False,
         'concurrent_fragment_downloads': 1,
-        'hls_prefer_native': True
+        'hls_prefer_native': True,
+        'noprogress': True
     }
+    
+    # Use cookies if provided (to reduce bot checks)
+    cookies_path = os.environ.get('YTDLP_COOKIES_PATH')
+    if cookies_path and os.path.exists(cookies_path):
+        config['cookiefile'] = cookies_path
     
     # Add proxy support if available
     proxy = os.environ.get('HTTP_PROXY') or os.environ.get('HTTPS_PROXY')
     if proxy:
         config['proxy'] = proxy
     
+    # Prefer progressive MP4 to avoid merging when ffmpeg missing on Render free
     if not for_download:
         config['extract_flat'] = False
-        config['format'] = 'best'
+        config['format'] = 'bestvideo[ext=mp4][vcodec^=avc1][height<=720]+bestaudio[ext=m4a]/best[ext=mp4]/best'
     else:
-        config['format'] = 'best[ext=mp4]/best'
+        config['format'] = 'bestaudio[ext=m4a]/best[ext=mp4]/best'
         
     return config
 
@@ -222,93 +268,93 @@ def get_video_info():
         except Exception as extract_error:
             app.logger.error(f"Info extraction failed after retries: {str(extract_error)}")
             return jsonify({'error': 'Could not extract video information. The video may be private, unavailable, or restricted.'}), 400
-            
-            # Check if we got valid info
-            if not info or not isinstance(info, dict):
-                return jsonify({'error': 'Could not extract video information. Please check the URL and try again.'}), 400
-            
-            # Save video info to database
-            video_id = extract_video_id(url)
-            if not video_id:
-                return jsonify({'error': 'Invalid YouTube URL format.'}), 400
-                
-            video = db.session.query(models.Video).filter_by(video_id=video_id).first()
-            
-            try:
-                if not video:
-                    video = models.Video(
-                        video_id=video_id,
-                        title=info.get('title', 'Unknown Title'),
-                        uploader=info.get('uploader', 'Unknown'),
-                        duration=info.get('duration', 0),
-                        view_count=info.get('view_count', 0),
-                        thumbnail_url=info.get('thumbnail', ''),
-                        description=info.get('description', ''),
-                        upload_date=datetime.fromtimestamp(info.get('timestamp', 0)) if info.get('timestamp') else None
-                    )
-                    db.session.add(video)
-                else:
-                    # Update existing video info
-                    video.title = info.get('title', video.title)
-                    video.uploader = info.get('uploader', video.uploader)
-                    video.view_count = info.get('view_count', video.view_count)
-                    video.thumbnail_url = info.get('thumbnail', video.thumbnail_url)
-                    video.updated_at = datetime.utcnow()
-                
-                db.session.commit()
-            except Exception as db_error:
-                app.logger.error(f"Database error: {str(db_error)}")
-                db.session.rollback()
-                # Continue without database save
-            
-            # Get available formats with fallback
-            formats = []
-            seen_qualities = set()
-            
-            if 'formats' in info and info['formats']:
-                for fmt in info['formats']:
-                    if fmt.get('vcodec') != 'none' and fmt.get('height'):
-                        quality = f"{fmt['height']}p"
-                        if quality not in seen_qualities:
-                            formats.append({
-                                'format_id': fmt['format_id'],
-                                'quality': quality,
-                                'ext': fmt.get('ext', 'mp4'),
-                                'filesize': fmt.get('filesize'),
-                                'fps': fmt.get('fps')
-                            })
-                            seen_qualities.add(quality)
-            
-            # If no formats found, add common fallback options
-            if not formats:
-                fallback_formats = [
-                    {'format_id': 'best', 'quality': 'Best Available', 'ext': 'mp4', 'filesize': None, 'fps': None},
-                    {'format_id': 'worst', 'quality': 'Lowest Quality', 'ext': 'mp4', 'filesize': None, 'fps': None}
-                ]
-                formats.extend(fallback_formats)
+        
+        # Check if we got valid info
+        if not info or not isinstance(info, dict):
+            return jsonify({'error': 'Could not extract video information. Please check the URL and try again.'}), 400
+        
+        # Save video info to database
+        video_id = extract_video_id(url)
+        if not video_id:
+            return jsonify({'error': 'Invalid YouTube URL format.'}), 400
+        
+        video = db.session.query(models.Video).filter_by(video_id=video_id).first()
+        
+        try:
+            if not video:
+                video = models.Video(
+                    video_id=video_id,
+                    title=info.get('title', 'Unknown Title'),
+                    uploader=info.get('uploader', 'Unknown'),
+                    duration=info.get('duration', 0),
+                    view_count=info.get('view_count', 0),
+                    thumbnail_url=info.get('thumbnail', ''),
+                    description=info.get('description', ''),
+                    upload_date=datetime.fromtimestamp(info.get('timestamp', 0)) if info.get('timestamp') else None
+                )
+                db.session.add(video)
             else:
-                # Sort formats by quality (descending)
-                formats.sort(key=lambda x: int(x['quality'].replace('p', '')), reverse=True)
-            
-            # Add audio-only option
-            formats.append({
-                'format_id': 'bestaudio',
-                'quality': 'Audio Only (MP3)',
-                'ext': 'mp3',
-                'filesize': None,
-                'fps': None
-            })
-            
-            video_info = {
-                'title': info.get('title', 'Unknown Title'),
-                'duration': info.get('duration', 0),
-                'thumbnail': info.get('thumbnail', ''),
-                'uploader': info.get('uploader', 'Unknown'),
-                'view_count': info.get('view_count', 0),
-                'formats': formats[:10]  # Limit to top 10 formats
-            }
-            
-            return jsonify(video_info)
+                # Update existing video info
+                video.title = info.get('title', video.title)
+                video.uploader = info.get('uploader', video.uploader)
+                video.view_count = info.get('view_count', video.view_count)
+                video.thumbnail_url = info.get('thumbnail', video.thumbnail_url)
+                video.updated_at = datetime.utcnow()
+        
+            db.session.commit()
+        except Exception as db_error:
+            app.logger.error(f"Database error: {str(db_error)}")
+            db.session.rollback()
+            # Continue without database save
+        
+        # Get available formats with fallback
+        formats = []
+        seen_qualities = set()
+        
+        if 'formats' in info and info['formats']:
+            for fmt in info['formats']:
+                if fmt.get('vcodec') != 'none' and fmt.get('height'):
+                    quality = f"{fmt['height']}p"
+                    if quality not in seen_qualities:
+                        formats.append({
+                            'format_id': fmt['format_id'],
+                            'quality': quality,
+                            'ext': fmt.get('ext', 'mp4'),
+                            'filesize': fmt.get('filesize'),
+                            'fps': fmt.get('fps')
+                        })
+                        seen_qualities.add(quality)
+        
+        # If no formats found, add common fallback options
+        if not formats:
+            fallback_formats = [
+                {'format_id': 'best', 'quality': 'Best Available', 'ext': 'mp4', 'filesize': None, 'fps': None},
+                {'format_id': 'worst', 'quality': 'Lowest Quality', 'ext': 'mp4', 'filesize': None, 'fps': None}
+            ]
+            formats.extend(fallback_formats)
+        else:
+            # Sort formats by quality (descending)
+            formats.sort(key=lambda x: int(x['quality'].replace('p', '')), reverse=True)
+        
+        # Add audio-only option
+        formats.append({
+            'format_id': 'bestaudio',
+            'quality': 'Audio Only (MP3)',
+            'ext': 'mp3',
+            'filesize': None,
+            'fps': None
+        })
+        
+        video_info = {
+            'title': info.get('title', 'Unknown Title'),
+            'duration': info.get('duration', 0),
+            'thumbnail': info.get('thumbnail', ''),
+            'uploader': info.get('uploader', 'Unknown'),
+            'view_count': info.get('view_count', 0),
+            'formats': formats[:10]  # Limit to top 10 formats
+        }
+        
+        return jsonify(video_info)
             
     except yt_dlp.DownloadError as e:
         error_msg = str(e)
@@ -350,14 +396,18 @@ def download_video():
         
         if format_id == 'bestaudio':
             ydl_opts['format'] = 'bestaudio/best'
-            ydl_opts['postprocessors'] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }]
+            if shutil.which('ffmpeg'):
+                ydl_opts['postprocessors'] = [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': os.environ.get('AUDIO_CODEC', 'mp3'),
+                    'preferredquality': os.environ.get('AUDIO_QUALITY', '192'),
+                }]
+            else:
+                app.logger.warning('ffmpeg not found; falling back to M4A audio without conversion')
+                ydl_opts['format'] = 'bestaudio[ext=m4a]/bestaudio/best'
         else:
             # Use best available format
-            ydl_opts['format'] = 'best'
+            ydl_opts['format'] = 'best[ext=mp4]/best'
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             # Get video info first
@@ -370,7 +420,7 @@ def download_video():
                 video_id=video_id,
                 format_id=format_id,
                 quality=format_id if format_id == 'bestaudio' else f"{format_id}p",
-                file_extension='mp3' if format_id == 'bestaudio' else 'mp4',
+                file_extension=('mp3' if format_id == 'bestaudio' and shutil.which('ffmpeg') else ('m4a' if format_id == 'bestaudio' else 'mp4')),
                 ip_address=request.remote_addr,
                 user_agent=request.headers.get('User-Agent', ''),
                 success=False
@@ -488,8 +538,8 @@ def api_stats():
 @app.route('/test')
 def test_video():
     """Test endpoint with a working video URL"""
-    test_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"  # Rick Roll - usually works
-    return render_template('test.html', test_url=test_url)
+    test_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    return render_template('index.html')
 
 @app.route('/health')
 def health_check():
@@ -527,4 +577,4 @@ def api_version():
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=os.environ.get('FLASK_ENV') != 'production')

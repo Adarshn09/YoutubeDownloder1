@@ -3,10 +3,11 @@ services:
     name: youtube-downloader
     env: python
     buildCommand: |
+      apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
       pip install --upgrade pip
       pip install -r requirements.txt
       pip install --upgrade yt-dlp
-    startCommand: python deploy.py
+    startCommand: gunicorn -w 2 -k gthread -t 180 -b 0.0.0.0:$PORT app:app
     plan: free
     autoDeploy: false
     envVars:
@@ -22,6 +23,15 @@ services:
         value: production
       - key: PYTHONUNBUFFERED
         value: "1"
+      - key: YTDL_CACHE_DIR
+        value: /tmp/ytdl-cache
+      # Optionally set cookies/proxy to reduce YouTube bot checks
+      # - key: YTDLP_COOKIES_B64
+      #   value: "..."
+      # - key: HTTP_PROXY
+      #   value: "http://user:pass@host:port"
+      # - key: HTTPS_PROXY
+      #   value: "http://user:pass@host:port"
 
 databases:
   - name: youtube-downloader-db
