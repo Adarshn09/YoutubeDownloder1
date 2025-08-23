@@ -84,6 +84,28 @@ The application is configured for development with:
 
 The application is designed to be lightweight and stateless, making it suitable for containerized deployment or simple hosting environments.
 
+## Deployment and Proxy
+
+If your deployment requires an outbound proxy, set one of the following environment variables. The app prefers `YTDLP_PROXY` and falls back to standard variables automatically:
+
+- `YTDLP_PROXY` (preferred)
+- `HTTPS_PROXY`
+- `HTTP_PROXY`
+- `ALL_PROXY`
+
+Examples:
+
+```bash
+# Single env handles both HTTP/HTTPS for yt-dlp
+YTDLP_PROXY=http://user:pass@proxy.example.com:8080
+
+# Or use standard variables
+HTTPS_PROXY=http://user:pass@proxy.example.com:8080
+HTTP_PROXY=http://user:pass@proxy.example.com:8080
+```
+
+The deployment script also bridges `YTDLP_PROXY` to the standard proxy variables so child processes see the proxy in production.
+
 ## Recent Changes: Latest modifications with dates
 
 ### July 14, 2025 - Migration and Authentication Improvements
