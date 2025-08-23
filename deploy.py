@@ -39,6 +39,13 @@ def setup_production_env():
     # Set yt-dlp specific optimizations
     os.environ['YTDL_CACHE_DIR'] = '/tmp/ytdl-cache'
     
+    # Bridge proxy env: prefer YTDLP_PROXY but populate standard vars if missing
+    ytdlp_proxy = os.environ.get('YTDLP_PROXY')
+    if ytdlp_proxy:
+        os.environ.setdefault('HTTPS_PROXY', ytdlp_proxy)
+        os.environ.setdefault('HTTP_PROXY', ytdlp_proxy)
+        os.environ.setdefault('ALL_PROXY', ytdlp_proxy)
+    
     logger.info("Production environment configured")
 
 def check_dependencies():

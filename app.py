@@ -182,7 +182,7 @@ def get_yt_dlp_config(for_download=False):
     }
     
     # Add proxy support if available
-    proxy = os.environ.get('HTTP_PROXY') or os.environ.get('HTTPS_PROXY')
+    proxy = os.environ.get('YTDLP_PROXY') or os.environ.get('HTTPS_PROXY') or os.environ.get('HTTP_PROXY') or os.environ.get('ALL_PROXY')
     if proxy:
         config['proxy'] = proxy
     
